@@ -1,0 +1,64 @@
+---
+
+- set_fact:
+    new_database_url: "postgresql://{{postgres_user}}:{{postgres_password}}@{{postgres_db_host}}/{{postgres_db}}"
+
+
+- name: Update package lists
+  apt:
+    update_cache: yes
+  become: yes
+
+- name: Install necessary dependencies
+  apt:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - "{{ dependencies }}"
+
+- name: Install python3-pip separately
+  apt:
+    name: python3-pip
+    state: present
+  become: yes
+
+
+- name: Clone the application repository
+  git:
+    repo: '{{ app_repo }}'
+    dest: '{{ app_dest }}'
+  register: git_clone_result
+  ignore_errors: yes
+
+- name: Check if Git clone was successful
+  fail:
+    msg: "Git clone failed. Please check the repository URL or the permissions."
+  when: git_clone_result is failed
+
+
+
+- name: Update database URL in app.py
+  lineinfile:
+    path: "{{ app_dest + '/app.py' }}"
+    regexp: '^DATABASE_URL ='
+    line: "DATABASE_URL = '{{ new_database_url }}'"
+  become: yes
+
+- name: Install App requirements
+  pip:
+    name: "{{ item }}"
+    executable: pip3
+  loop:
+    - "{{ app_requirements }}"
+
+
+
+- name: Start the application with Gunicorn in the background
+  shell: nohup gunicorn -w 4 -b 0.0.0.0:80 "app:app" > "{{ app_dest + '/app.log' }}" 2>&1 &
+  args:
+    executable: /bin/bash
+    chdir: '{{ app_dest }}'
+  async: 10
+  poll: 0
+  become: yes
+

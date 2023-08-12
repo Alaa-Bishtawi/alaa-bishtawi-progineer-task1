@@ -1,0 +1,90 @@
+---
+- name: Add PostgreSQL GPG key
+  apt_key:
+    url: "https://www.postgresql.org/media/keys/ACCC4CF8.asc"
+    state: present
+
+- name: Get Ubuntu codename
+  command: lsb_release -cs
+  register: ubuntu_codename
+  changed_when: False
+
+- name: Add PostgreSQL APT repository
+  apt_repository:
+    repo: "deb http://apt.postgresql.org/pub/repos/apt/ {{ ubuntu_codename.stdout }}-pgdg main"
+    state: present
+
+- name: Update package lists
+  apt:
+    update_cache: yes
+
+- name: Install psycopg2 Python package
+  apt:
+    name: python3-psycopg2
+    state: present
+
+- name: Install PostgreSQL packages
+  apt:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - postgresql-{{ postgres_version }}
+    - postgresql-contrib-{{ postgres_version }}
+
+- name: Enable and start Postgres service
+  systemd:
+    name: postgresql
+    state: started
+    enabled: yes
+
+- name: Set postgres user password
+  shell: sudo -u postgres psql -c "ALTER USER postgres WITH PASSWORD '{{postgres_password}}';"
+
+- name: Update pg_hba.conf to use MD5 authentication for postgres user
+  lineinfile:
+    path: /etc/postgresql/{{ postgres_version }}/main/pg_hba.conf
+    regexp: '^local\s+all\s+postgres\s+peer'
+    line: 'local   all             postgres                                md5'
+  notify: restart postgres
+
+- name: Create the database user
+  postgresql_user:
+    login_host: localhost
+    login_user: postgres
+    login_password: "{{postgres_password}}"
+    name: "{{postgres_user}}"
+    password: "{{postgres_password}}"
+    role_attr_flags: CREATEDB
+
+- name: Create the database
+  postgresql_db:
+    login_host: localhost
+    login_user: postgres
+    login_password: "{{postgres_password}}"
+    name: "{{postgres_db}}"
+    owner: "{{postgres_user}}"
+
+- name: Allow user to connect to the database
+  postgresql_privs:
+    login_host: localhost
+    login_user: postgres
+    login_password: "{{postgres_password}}"
+    db: "{{postgres_db}}"
+    privs: ALL
+    type: database
+    role: "{{postgres_user}}"
+
+- name: Set PostgreSQL configurations
+  lineinfile:
+    dest: /etc/postgresql/{{ postgres_version }}/main/postgresql.conf
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+  with_items:
+    - { regexp: '^#?listen_addresses', line: "listen_addresses = '{{ db_private_ip }}'" }
+  notify: restart postgres
+
+- name: Allow all IP addresses to connect
+  lineinfile:
+    dest: /etc/postgresql/{{ postgres_version }}/main/pg_hba.conf
+    line: "host    all             all              {{ app_private_ip }}/32                 md5"  # or we can put vpc private cidr
+  notify: restart postgres
